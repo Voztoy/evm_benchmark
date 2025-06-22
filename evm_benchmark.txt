@@ -1,0 +1,128 @@
+
+#include <iostream>
+#include <iomanip>
+#include <sstream>
+#include <chrono>
+#include <random>
+#include <fstream>
+#include <filesystem>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
+#include "sha3.h"
+#include <algorithm>
+
+
+std::string toHex(const unsigned char* data, size_t len) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < len; ++i)
+        oss << std::hex << std::setw(2) << std::setfill('0') << (int)data[i];
+    return oss.str();
+}
+
+bool getPublicKey(const unsigned char* privKey, unsigned char* pubKey, size_t& pubKeyLen) {
+    EC_KEY* ecKey = EC_KEY_new_by_curve_name(NID_secp256k1);
+    BIGNUM* prv = BN_bin2bn(privKey, 32, NULL);
+    if (!EC_KEY_set_private_key(ecKey, prv)) return false;
+
+    const EC_GROUP* group = EC_KEY_get0_group(ecKey);
+    EC_POINT* pub = EC_POINT_new(group);
+    if (!EC_POINT_mul(group, pub, prv, NULL, NULL, NULL)) return false;
+    if (!EC_KEY_set_public_key(ecKey, pub)) return false;
+
+    pubKeyLen = i2o_ECPublicKey(ecKey, NULL);
+    unsigned char* temp = pubKey;
+    i2o_ECPublicKey(ecKey, &temp);
+
+    EC_POINT_free(pub);
+    EC_KEY_free(ecKey);
+    BN_free(prv);
+    return true;
+}
+
+void keccak256(const unsigned char* data, size_t len, unsigned char* out) {
+    sha3_256(out, data, len);
+}
+
+std::string generateEthereumAddress(const unsigned char* privKey) {
+    unsigned char pubKey[65];
+    size_t pubKeyLen;
+
+    if (!getPublicKey(privKey, pubKey, pubKeyLen)) return "";
+
+    unsigned char hash[32];
+    keccak256(pubKey + 1, pubKeyLen - 1, hash);
+
+    return "0x" + toHex(hash + 12, 20);
+}
+
+#include <random>
+
+bool isAllDigits(const std::string& str) {
+    return std::all_of(str.begin(), str.end(), ::isdigit);
+}
+
+bool last4SameDigits(const std::string& str) {
+    if (str.length() < 4) return false;
+    char ch = str[str.length() - 1];
+    return str.substr(str.length() - 4) == std::string(4, ch);
+}
+
+int main() {
+    int matched = 0;
+    long long totalTried = 0;
+
+    std::ofstream outFile("/mnt/d/found.txt");
+
+    if (!outFile) {
+        std::cerr << "❌ Không thể ghi file tại ổ D. Hãy đảm bảo ổ D tồn tại và WSL có quyền ghi.\n";
+        return 1;
+    }
+
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<uint8_t> dist(0, 255);
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    while (true) {
+        ++totalTried;
+
+        unsigned char privKey[32];
+        for (int j = 0; j < 32; ++j)
+            privKey[j] = dist(rng);
+
+        std::string address = generateEthereumAddress(privKey);
+        std::string hexPart = address.substr(2);
+
+        if (hexPart.length() >= 40) {
+            std::string first10 = hexPart.substr(0, 10);
+            std::string last10  = hexPart.substr(30, 10);
+
+            if (isAllDigits(first10) && isAllDigits(last10) && last4SameDigits(last10)) {
+                ++matched;
+                std::string privHex = "0x" + toHex(privKey, 32);
+
+                std::cout << "🎯 Match: " << address << " (sau " << totalTried << " lần thử)\n";
+
+                outFile << "Address: " << address << "\n";
+                outFile << "PrivateKey: " << privHex << "\n";
+                outFile << "------------------------------\n";
+
+                break;
+            }
+        }
+
+        if (totalTried % 100000 == 0) {
+            std::cout << "⏳ Đã thử " << totalTried << " ví...\n";
+        }
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    double seconds = std::chrono::duration<double>(end - start).count();
+
+    std::cout << "\n✅ Tổng thử: " << totalTried
+              << "\n⏱️ Thời gian: " << seconds << " giây"
+              << "\n🎉 Số ví phù hợp: " << matched << "\n";
+
+    outFile.close();
+    return 0;
+}

@@ -1,6 +1,7 @@
 
 - Cài ubuntu
    ```bash
+   wsl --unregister Ubuntu
    wsl --install
    ```
 
